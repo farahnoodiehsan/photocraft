@@ -362,6 +362,14 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
                 })
             }
         }
+        id @ ("image.ai.generate" | "edit.ai.generativeFill" | "image.ai.expandCanvas" | "layer.ai.variations")
+            if params.as_object().is_none_or(|o| o.is_empty()) =>
+        {
+            if let Some(Err(why)) = photocraft_engine::commands::find(id).map(|c| (c.enabled)(&app.session)) {
+                return Err(why);
+            }
+            Ok(json!({"dialog": app.ui.open_dialog(DialogKind::Command, generative_fields(id))}))
+        }
         // Layer › Export As… / Quick Export as PNG: the export pipeline on just the active layer.
         l if matches!(l, "layer.exportAs" | "layer.quickExportAsPng") && params.as_object().is_none_or(|o| o.is_empty()) => {
             let layer = app.session.active().and_then(|d| d.active_layer).ok_or("no active layer")?;
@@ -646,6 +654,26 @@ pub(crate) fn invoke_unguarded(app: &mut PhotocraftApp, ctx: &egui::Context, id:
     }
 }
 
+fn generative_fields(id: &str) -> serde_json::Map<String, Value> {
+    let mut fields = serde_json::Map::new();
+    fields.insert("__command".into(), json!(id));
+    fields.insert("__label".into(), json!(photocraft_engine::commands::find(id).map_or(id, |c| c.label)));
+    fields.insert("__form".into(), json!(true));
+    fields.insert("prompt".into(), json!(if id == "layer.ai.variations" { "Create a faithful visual variation of this image." } else { "" }));
+    if id == "layer.ai.variations" {
+        fields.insert("source".into(), json!("composite"));
+        fields.insert("__choices".into(), json!({"source":["composite","layer"]}));
+    }
+    if id == "image.ai.generate" {
+        fields.insert("size".into(), json!("1024x1024"));
+        fields.insert("__choices".into(), json!({"size":["1024x1024","1024x1536","1536x1024","auto"]}));
+    }
+    if id == "image.ai.expandCanvas" {
+        fields.insert("pixels".into(), json!(128));
+    }
+    fields
+}
+
 fn open_path(app: &mut PhotocraftApp, path: &str) -> Result<Value, String> {
     app.open_path(path).map(|w| json!({"warnings": w}))
 }
@@ -906,6 +934,10 @@ pub fn is_live(id: &str) -> bool {
 /// catalogue spells it differently (Filter › "Other…").
 const PLACE_AFTER: &[(&str, &str)] = &[
     ("file.newFromClipboard", "file.new"),
+    ("image.ai.generate", "image.mode.colorTable"),
+    ("edit.ai.generativeFill", "edit.undo"),
+    ("image.ai.expandCanvas", "image.ai.generate"),
+    ("layer.ai.variations", "layer.new.layer"),
     ("filter.render.relight", "filter.render.lightingEffects"),
     ("view.resetView", "view.flipHorizontal"),
     ("filter.other.colorToAlpha", "filter.other.offset"),
@@ -1574,6 +1606,17 @@ pub fn apply_workspace(app: &mut PhotocraftApp) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn generative_forms_offer_safe_interactive_defaults() {
+        let expand = generative_fields("image.ai.expandCanvas");
+        assert_eq!(expand.get("pixels"), Some(&json!(128)));
+        assert_eq!(expand.get("prompt"), Some(&json!("")));
+
+        let variations = generative_fields("layer.ai.variations");
+        assert_eq!(variations.get("source"), Some(&json!("composite")));
+        assert_eq!(variations.get("__choices"), Some(&json!({"source":["composite","layer"]})));
+    }
 
     #[test]
     fn sync_with_system_menu_keeps_saved_slots_and_its_checkmark_across_palettes() {
